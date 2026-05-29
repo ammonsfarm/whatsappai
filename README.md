@@ -48,6 +48,7 @@ Auth state is stored under `.data/whatsapp/default` by default. Treat this direc
 - Group chats are ignored unless `WHATSAPP_ENABLE_GROUPS=true`.
 - `WHATSAPP_SELF_CHAT_MODE=true` lets the linked account's own messages be processed, while suppressing replies sent by this bridge to avoid loops.
 - Each WhatsApp DM maps to a stable Silo conversation key like `whatsapp:dm:+15551234567`.
+- WhatsApp images/documents are saved under `.data/attachments` and attached automatically to the next `/email draft` or `/email send` from that chat.
 
 ## Gmail via gog
 
@@ -63,6 +64,8 @@ If `gog` is authenticated, WhatsApp can run a narrow set of Gmail commands befor
 ```
 
 Actual sending is disabled unless `GOG_ALLOW_SEND=true`. Draft creation is enabled by default.
+
+To attach WhatsApp media, send the image/file to the chat first, then send the `/email draft ...` or `/email send ...` command. Recent media from that chat is attached automatically.
 
 ## Development
 

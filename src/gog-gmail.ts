@@ -17,6 +17,11 @@ type EmailParts = {
   body?: string;
 };
 
+export type EmailAttachment = {
+  path: string;
+  label: string;
+};
+
 const EMAIL_HELP = [
   'Gmail commands:',
   '/email check',
@@ -31,7 +36,7 @@ const EMAIL_HELP = [
 export class GogGmail {
   constructor(private readonly cfg: GogConfig) {}
 
-  async maybeHandle(text: string) {
+  async maybeHandle(text: string, recentAttachments: EmailAttachment[] = []) {
     const trimmed = text.trim();
     if (!this.cfg.enabled) return null;
 
@@ -52,10 +57,10 @@ export class GogGmail {
     if (readMatch?.[1]) return this.readThread(readMatch[1]);
 
     const draftMatch = trimmed.match(/^\/?(?:email|gmail)\s+draft\s+(.+)$/i);
-    if (draftMatch?.[1]) return this.createDraft(this.parseEmailParts(draftMatch[1]));
+    if (draftMatch?.[1]) return this.createDraft(this.parseEmailParts(draftMatch[1]), recentAttachments);
 
     const sendMatch = trimmed.match(/^\/?(?:email|gmail)\s+send\s+(.+)$/i);
-    if (sendMatch?.[1]) return this.send(this.parseEmailParts(sendMatch[1]));
+    if (sendMatch?.[1]) return this.send(this.parseEmailParts(sendMatch[1]), recentAttachments);
 
     return null;
   }
@@ -78,22 +83,23 @@ export class GogGmail {
     return this.formatThreadDetail(parsed);
   }
 
-  private async createDraft(parts: EmailParts) {
+  private async createDraft(parts: EmailParts, attachments: EmailAttachment[]) {
     this.requireEmailParts(parts);
     const output = await this.run([
       'gmail', 'drafts', 'create',
       '--to', parts.to!,
       '--subject', parts.subject!,
       '--body', parts.body!,
+      ...this.attachmentArgs(attachments),
       '--json',
       '--no-input',
     ]);
     const parsed = this.parseJson(output);
     const id = this.findString(parsed, ['id', 'draftId', 'message.id']);
-    return `Created Gmail draft${id ? ` ${id}` : ''} to ${parts.to}: ${parts.subject}`;
+    return `Created Gmail draft${id ? ` ${id}` : ''} to ${parts.to}: ${parts.subject}${this.attachmentSummary(attachments)}`;
   }
 
-  private async send(parts: EmailParts) {
+  private async send(parts: EmailParts, attachments: EmailAttachment[]) {
     if (!this.cfg.allowSend) {
       return 'Gmail sending is disabled. Set GOG_ALLOW_SEND=true, restart whatsappai, then use /email send to:... subject:... body:...';
     }
@@ -103,12 +109,23 @@ export class GogGmail {
       '--to', parts.to!,
       '--subject', parts.subject!,
       '--body', parts.body!,
+      ...this.attachmentArgs(attachments),
       '--json',
       '--no-input',
     ]);
     const parsed = this.parseJson(output);
     const id = this.findString(parsed, ['id', 'message.id']);
-    return `Sent Gmail message${id ? ` ${id}` : ''} to ${parts.to}: ${parts.subject}`;
+    return `Sent Gmail message${id ? ` ${id}` : ''} to ${parts.to}: ${parts.subject}${this.attachmentSummary(attachments)}`;
+  }
+
+  private attachmentArgs(attachments: EmailAttachment[]) {
+    return attachments.flatMap((attachment) => ['--attach', attachment.path]);
+  }
+
+  private attachmentSummary(attachments: EmailAttachment[]) {
+    if (attachments.length === 0) return '';
+    const labels = attachments.map((attachment) => attachment.label).join(', ');
+    return `\nAttached ${attachments.length} WhatsApp file(s): ${labels}`;
   }
 
   private async run(args: string[]) {
@@ -203,4 +220,3 @@ export class GogGmail {
     }, value);
   }
 }
-

@@ -40,6 +40,8 @@ export const config = {
     enableGroups: asBool(process.env.WHATSAPP_ENABLE_GROUPS, false),
     allowGroups: csv(process.env.WHATSAPP_ALLOW_GROUPS),
     textChunkLimit: asPositiveInt(process.env.WHATSAPP_TEXT_CHUNK_LIMIT, 3500),
+    attachmentDir: resolvePath(process.env.WHATSAPP_ATTACHMENT_DIR?.trim() || '.data/attachments'),
+    attachmentMaxMb: asPositiveInt(process.env.WHATSAPP_ATTACHMENT_MAX_MB, 25),
   },
   gog: {
     enabled: asBool(process.env.GOG_ENABLED, true),

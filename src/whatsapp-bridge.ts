@@ -1,5 +1,6 @@
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
@@ -12,12 +13,14 @@ import pino from 'pino';
 import QRCode from 'qrcode';
 import qrcode from 'qrcode-terminal';
 import { config } from './config.js';
+import type { EmailAttachment } from './gog-gmail.js';
 import { GogGmail } from './gog-gmail.js';
 import { RecentSet } from './recent-set.js';
 import { SiloClient } from './silo-client.js';
 import {
   chunkText,
   extractText,
+  getMediaInfo,
   getMessageTimestampMs,
   isGroupJid,
   messageId,
@@ -34,12 +37,19 @@ type ConnectionCloseError = {
 };
 
 const RECENT_TTL_MS = 10 * 60 * 1000;
+const ATTACHMENT_TTL_MS = 30 * 60 * 1000;
+
+type StoredAttachment = EmailAttachment & {
+  expiresAt: number;
+  sizeBytes: number;
+};
 
 export class WhatsAppBridge {
   private sock: WASocket | null = null;
   private readonly logger = pino({ level: config.logLevel });
   private readonly seenInbound = new RecentSet(RECENT_TTL_MS);
   private readonly recentOutbound = new RecentSet(RECENT_TTL_MS);
+  private readonly recentAttachments = new Map<string, StoredAttachment[]>();
   private readonly directAllow: ReturnType<typeof normalizeAllowList>;
   private readonly groupAllow: { allowAll: boolean; groups: Set<string> };
   private startedAtMs = Date.now();
@@ -217,14 +227,34 @@ export class WhatsAppBridge {
     const conversationKey = group
       ? `whatsapp:group:${remoteJid}`
       : `whatsapp:dm:${senderPhone || remoteJid}`;
+    const savedAttachment = await this.saveInboundMedia(message, conversationKey, id);
 
-    this.logger.info({ from: senderPhone || remoteJid, group, text }, 'inbound WhatsApp message');
+    this.logger.info({
+      from: senderPhone || remoteJid,
+      group,
+      text,
+      attachment: savedAttachment ? {
+        path: savedAttachment.path,
+        label: savedAttachment.label,
+        sizeBytes: savedAttachment.sizeBytes,
+      } : null,
+    }, 'inbound WhatsApp message');
     await this.sendPresence(remoteJid);
     await this.markRead(remoteJid, id, message.key.participant || undefined);
 
-    const gmailReply = await this.gmail.maybeHandle(text);
-    if (gmailReply) {
-      await this.sendText(remoteJid, gmailReply);
+    try {
+      const attachments = this.getRecentAttachments(conversationKey);
+      const gmailReply = await this.gmail.maybeHandle(text, attachments);
+      if (gmailReply) {
+        await this.sendText(remoteJid, gmailReply);
+        if (/^\/?(email|gmail)\s+(draft|send)\b/i.test(text.trim())) {
+          this.recentAttachments.delete(conversationKey);
+        }
+        return;
+      }
+    } catch (error) {
+      this.logger.error({ error }, 'Gmail command failed');
+      await this.sendText(remoteJid, error instanceof Error ? error.message : 'Gmail command failed.');
       return;
     }
 
@@ -277,5 +307,45 @@ export class WhatsAppBridge {
       const id = result?.key.id;
       if (id) this.recentOutbound.add(`${remoteJid}:${id}`);
     }
+  }
+
+  private async saveInboundMedia(message: WAMessage, conversationKey: string, messageIdValue: string) {
+    const media = getMediaInfo(message);
+    if (!media || !this.sock) return null;
+
+    const buffer = await downloadMediaMessage(message, 'buffer', {}, {
+      reuploadRequest: this.sock.updateMediaMessage,
+      logger: this.sock.logger,
+    });
+    const maxBytes = this.cfg.attachmentMaxMb * 1024 * 1024;
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`WhatsApp attachment is too large (${buffer.byteLength} bytes; max ${maxBytes}).`);
+    }
+
+    const safeMessageId = messageIdValue.replace(/[^a-zA-Z0-9_-]/g, '');
+    const date = new Date().toISOString().slice(0, 10);
+    const dir = path.join(this.cfg.attachmentDir, date);
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    const baseName = media.fileName?.replace(/[^a-zA-Z0-9._-]/g, '_') || `${safeMessageId || Date.now()}.${media.extension}`;
+    const filePath = path.join(dir, baseName);
+    await fs.writeFile(filePath, buffer, { mode: 0o600 });
+
+    const attachment: StoredAttachment = {
+      path: filePath,
+      label: baseName,
+      sizeBytes: buffer.byteLength,
+      expiresAt: Date.now() + ATTACHMENT_TTL_MS,
+    };
+    const existing = this.getRecentAttachments(conversationKey);
+    this.recentAttachments.set(conversationKey, [...existing, attachment].slice(-5));
+    return attachment;
+  }
+
+  private getRecentAttachments(conversationKey: string) {
+    const now = Date.now();
+    const attachments = (this.recentAttachments.get(conversationKey) || []).filter((attachment) => attachment.expiresAt > now);
+    if (attachments.length) this.recentAttachments.set(conversationKey, attachments);
+    else this.recentAttachments.delete(conversationKey);
+    return attachments;
   }
 }

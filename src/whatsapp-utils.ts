@@ -81,6 +81,65 @@ export const getMessageTimestampMs = (message: WAMessage) => {
   return Number.isFinite(numeric) ? numeric * 1000 : undefined;
 };
 
+export type MediaInfo = {
+  kind: 'image' | 'video' | 'audio' | 'document' | 'sticker';
+  mimeType: string;
+  fileName?: string;
+  extension: string;
+};
+
+const extensionFromMime = (mimeType: string) => {
+  const normalized = mimeType.split(';')[0]?.trim().toLowerCase() || '';
+  const known: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'video/mp4': 'mp4',
+    'audio/ogg': 'ogg',
+    'audio/mpeg': 'mp3',
+    'audio/mp4': 'm4a',
+    'application/pdf': 'pdf',
+    'text/plain': 'txt',
+    'text/csv': 'csv',
+  };
+  return known[normalized] || normalized.split('/')[1]?.replace(/[^a-z0-9]/g, '') || 'bin';
+};
+
+export const getMediaInfo = (message: WAMessage): MediaInfo | null => {
+  const content = extractMessageContent(message.message);
+  if (!content) return null;
+  const type = getContentType(content);
+  if (type === 'imageMessage' && content.imageMessage) {
+    const mimeType = content.imageMessage.mimetype || 'image/jpeg';
+    return { kind: 'image', mimeType, extension: extensionFromMime(mimeType) };
+  }
+  if (type === 'videoMessage' && content.videoMessage) {
+    const mimeType = content.videoMessage.mimetype || 'video/mp4';
+    return { kind: 'video', mimeType, extension: extensionFromMime(mimeType) };
+  }
+  if (type === 'audioMessage' && content.audioMessage) {
+    const mimeType = content.audioMessage.mimetype || 'audio/ogg';
+    return { kind: 'audio', mimeType, extension: extensionFromMime(mimeType) };
+  }
+  if (type === 'stickerMessage' && content.stickerMessage) {
+    const mimeType = content.stickerMessage.mimetype || 'image/webp';
+    return { kind: 'sticker', mimeType, extension: extensionFromMime(mimeType) };
+  }
+  if (type === 'documentMessage' && content.documentMessage) {
+    const mimeType = content.documentMessage.mimetype || 'application/octet-stream';
+    const fileName = content.documentMessage.fileName || undefined;
+    const fileExtension = fileName?.split('.').pop()?.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    return {
+      kind: 'document',
+      mimeType,
+      fileName,
+      extension: fileExtension || extensionFromMime(mimeType),
+    };
+  }
+  return null;
+};
+
 export const chunkText = (text: string, limit: number) => {
   const normalized = text.trim();
   if (!normalized) return ['I did not get a text response from Silo.'];
@@ -107,4 +166,3 @@ export const chunkText = (text: string, limit: number) => {
 export const messageId = (message: Pick<WAMessage, 'key'>) => message.key.id || '';
 
 export type AnyProtoMessage = proto.IMessage;
-
